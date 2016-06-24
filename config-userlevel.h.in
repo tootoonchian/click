@@ -116,6 +116,9 @@
 /* Define if you have the <net/netmap.h> header file. */
 #undef HAVE_NET_NETMAP_H
 
+/* Define if you have the <rte_eal.h> header file. */
+#undef HAVE_DPDK
+
 /* Define if you have the <netpacket/packet.h> header file. */
 #undef HAVE_NETPACKET_PACKET_H
 

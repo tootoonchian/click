@@ -82,6 +82,10 @@ extern "C" {
 #if FROMDEVICE_ALLOW_NETMAP
 # define TODEVICE_ALLOW_NETMAP 1
 #endif
+#if FROMDEVICE_ALLOW_DPDK
+# define TODEVICE_ALLOW_DPDK 1
+# include "elements/userlevel/dpdkinfo.hh"
+#endif
 
 class ToDevice : public Element { public:
 
@@ -120,7 +124,14 @@ class ToDevice : public Element { public:
 #if TODEVICE_ALLOW_NETMAP
     NetmapInfo _netmap;
 #endif
-    enum { method_default, method_netmap, method_linux, method_pcap, method_devbpf, method_pcapfd };
+#if FROMDEVICE_ALLOW_DPDK
+    DPDKInfo* _dpdk;
+    uint8_t _portid;
+    uint16_t _queueid;
+    uint64_t _prev_tsc;
+    uint64_t _yield_tsc;
+#endif
+    enum { method_default, method_netmap, method_linux, method_pcap, method_devbpf, method_pcapfd, method_dpdk };
     int _method;
     NotifierSignal _signal;
 

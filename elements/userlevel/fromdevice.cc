@@ -50,14 +50,23 @@
 # include <net/if.h>
 # include <features.h>
 # include <linux/if_packet.h>
+# ifndef FROMDEVICE_ALLOW_DPDK
 # include <net/ethernet.h>
+# endif
+#endif
+#if FROMDEVICE_ALLOW_DPDK
+# define ETH_P_ALL 0x0003
+# include <click/router.hh>
+# include <rte_cycles.h>
+# include <rte_ethdev.h>
+# include <rte_mbuf.h>
 #endif
 
 CLICK_DECLS
 
 FromDevice::FromDevice()
     :
-#if FROMDEVICE_ALLOW_NETMAP || FROMDEVICE_ALLOW_PCAP
+#if FROMDEVICE_ALLOW_DPDK || FROMDEVICE_ALLOW_NETMAP || FROMDEVICE_ALLOW_PCAP
       _task(this),
 #endif
 #if FROMDEVICE_ALLOW_PCAP
@@ -84,6 +93,23 @@ FromDevice::configure(Vector<String> &conf, ErrorHandler *errh)
     _headroom += (4 - (_headroom + 2) % 4) % 4; // default 4/2 alignment
     _force_ip = false;
     _burst = 1;
+#if FROMDEVICE_ALLOW_DPDK
+    _portid = 0;
+    _queueid = 0;
+    _prev_ts = 0;
+
+    Router *r = router();
+    for (int ei = 0; ei < r->nelements(); ++ei) {
+        Element* e = r->element(ei);
+        if (strcmp(e->class_name(), "DPDKInfo") == 0)
+            _dpdk = (DPDKInfo*)e->cast("DPDKInfo");
+    }
+
+    if (!_dpdk) {
+        return errh->error("DPDKInfo not configured!");
+    }
+#endif
+
     String bpf_filter, capture, encap_type;
     bool has_encap;
     if (Args(conf, this, errh)
@@ -143,6 +169,14 @@ FromDevice::configure(Vector<String> &conf, ErrorHandler *errh)
 #if FROMDEVICE_ALLOW_NETMAP
     else if (capture == "NETMAP")
 	_method = method_netmap;
+#endif
+#if FROMDEVICE_ALLOW_DPDK
+    else if (capture == "DPDK") {
+        _method = method_dpdk;
+        if (_dpdk->port_id(_ifname, &_portid) != 0)
+            return errh->error("unable to find %s", _ifname.c_str());
+        click_chatter("%p{element}(%s): DPDK port_id: %d, burst: %d", this, _ifname.c_str(), _portid, _burst);
+    }
 #endif
     else
 	return errh->error("bad METHOD");
@@ -407,6 +441,10 @@ FromDevice::initialize(ErrorHandler *errh)
     if (_method == method_pcap || _method == method_netmap)
 	ScheduleInfo::initialize_task(this, &_task, false, errh);
 #endif
+#if FROMDEVICE_ALLOW_DPDK
+    if (_method == method_dpdk)
+        ScheduleInfo::initialize_task(this, &_task, true, errh);
+#endif
 #if FROMDEVICE_ALLOW_PCAP || FROMDEVICE_ALLOW_LINUX || FROMDEVICE_ALLOW_NETMAP
     if (_fd >= 0)
 	add_select(_fd, SELECT_READ);
@@ -556,12 +594,61 @@ FromDevice::selected(int, int)
 #endif
 }
 
-#if FROMDEVICE_ALLOW_PCAP || FROMDEVICE_ALLOW_NETMAP
+#if FROMDEVICE_ALLOW_DPDK
+static inline void rte_mbuf_destructor(unsigned char *head,
+        __attribute__((unused)) size_t len,
+        void *argument)
+{
+    rte_pktmbuf_free((struct rte_mbuf *)(argument));
+}
+#endif
+
+#if FROMDEVICE_ALLOW_PCAP || FROMDEVICE_ALLOW_NETMAP || FROMDEVICE_ALLOW_DPDK
 bool
 FromDevice::run_task(Task *)
 {
     // Read and push() at most one burst of packets.
     int r = 0;
+# if FROMDEVICE_ALLOW_DPDK
+    if (_method == method_dpdk) {
+        int i;
+        struct rte_mbuf *mbufs[_burst] __attribute__ ((aligned (64)));
+        struct rte_mbuf *m;
+
+        double now = 1000 * (rte_get_tsc_cycles() / (double)rte_get_tsc_hz());
+        if (now  - _prev_ts < 0.0021) {
+            _task.fast_reschedule();
+            return false;
+        }
+
+        while (r < _burst) {
+            i = rte_eth_rx_burst(_portid,  _queueid, &mbufs[r], _burst - r);
+            if (i <= 0)
+                break;
+            r += i;
+        }
+        /*if (r) {
+            printf("recv %d refcnt=%d nb_segs=%d buf_len=%d data_len=%d\n",
+                    r, mbufs[0]->refcnt, mbufs[0]->nb_segs,
+                    mbufs[0]->buf_len, mbufs[0]->data_len);
+        }*/
+
+        for (i = 0; i < r; i++) {
+            m = mbufs[i];
+            rte_prefetch0(rte_pktmbuf_mtod(m, void *));
+            Packet *p = Packet::make(rte_pktmbuf_mtod(m, u_char*),
+                    rte_pktmbuf_pkt_len(m), (u_char*) m->buf_addr, m->buf_len,
+                    &rte_mbuf_destructor, reinterpret_cast<void *>(m));
+
+            this->output(0).push(p);
+        }
+
+        _prev_ts = now;
+        _task.fast_reschedule(); // i.e., always fast_reschedule
+        _count += r;
+        return r > 0;
+    }
+# endif
 # if FROMDEVICE_ALLOW_NETMAP
     if (_method == method_netmap) {
 	// Read and push() at most one burst of packets.
@@ -648,4 +735,7 @@ FromDevice::add_handlers()
 
 CLICK_ENDDECLS
 ELEMENT_REQUIRES(userlevel FakePcap KernelFilter NetmapInfo)
+#if FROMDEVICE_ALLOW_DPDK
+ELEMENT_REQUIRES(DPDKInfo)
+#endif
 EXPORT_ELEMENT(FromDevice)

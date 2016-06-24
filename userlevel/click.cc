@@ -721,9 +721,9 @@ particular purpose.\n");
         pthread_t p;
         pthread_create(&p, 0, thread_driver, click_master->thread(t));
         other_threads.push_back(p);
-        do_set_affinity(p, t);
+        //do_set_affinity(p, t);
     }
-    do_set_affinity(pthread_self(), 0);
+    //do_set_affinity(pthread_self(), 0);
 #endif
 
     // run driver

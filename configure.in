@@ -1178,6 +1178,7 @@ dnl note: no longer need pcap under Linux
 if test "$enable_userlevel" = yes; then
     CLICK_CHECK_LIBPCAP
     CLICK_CHECK_NETMAP
+    CLICK_CHECK_DPDK
     if test "$HAVE_PCAP" != yes -a "$HAVE_NETMAP" != yes -a "$ac_cv_under_linux" != yes; then
         AC_MSG_WARN([
 =========================================
@@ -1991,6 +1992,11 @@ fi
 dnl add 'netmap' if netmap support is available
 if test "x$HAVE_NETMAP" = xyes; then
     provisions="$provisions netmap"
+fi
+
+dnl add 'dpdk' if DPDK support is available
+if test "x$HAVE_DPDK" = xyes; then
+    provisions="$provisions dpdk"
 fi
 
 dnl add 'pcap' if libpcap is available

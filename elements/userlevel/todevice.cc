@@ -58,6 +58,13 @@
 //# include <sys/mman.h>
 #endif
 
+#if TODEVICE_ALLOW_DPDK
+# define YIELD_USEC_DEFAULT 0
+# include <rte_cycles.h>
+# include <rte_ethdev.h>
+# include <rte_mbuf.h>
+#endif
+
 CLICK_DECLS
 
 ToDevice::ToDevice()
@@ -67,7 +74,7 @@ ToDevice::ToDevice()
     _pcap = 0;
     _my_pcap = false;
 #endif
-#if TODEVICE_ALLOW_LINUX || TODEVICE_ALLOW_DEVBPF || TODEVICE_ALLOW_PCAPFD || TODEVICE_ALLOW_NETMAP
+#if TODEVICE_ALLOW_LINUX || TODEVICE_ALLOW_DEVBPF || TODEVICE_ALLOW_PCAPFD || TODEVICE_ALLOW_NETMAP || TODEVICE_ALLOW_DPDK
     _fd = -1;
     _my_fd = false;
 #endif
@@ -81,12 +88,34 @@ int
 ToDevice::configure(Vector<String> &conf, ErrorHandler *errh)
 {
     String method;
-    _burst = 1;
+    _burst = 32;
+#if FROMDEVICE_ALLOW_DPDK
+    uint64_t _yield_us = YIELD_USEC_DEFAULT;
+    _prev_tsc = rte_rdtsc();
+    _portid = 0;
+    _queueid = 0;
+
+    Router *r = router();
+    for (int ei = 0; ei < r->nelements(); ++ei) {
+        Element* e = r->element(ei);
+        if (strcmp(e->class_name(), "DPDKInfo") == 0)
+            _dpdk = (DPDKInfo*)e->cast("DPDKInfo");
+    }
+
+    if (!_dpdk) {
+        return errh->error("DPDKInfo not configured!");
+    }
+#endif
+
     if (Args(conf, this, errh)
 	.read_mp("DEVNAME", _ifname)
 	.read("DEBUG", _debug)
 	.read("METHOD", WordArg(), method)
 	.read("BURST", _burst)
+#if TODEVICE_ALLOW_DPDK
+    .read("QUEUE", _queueid)
+    .read("YIELD_USEC", _yield_us)
+#endif
 	.complete() < 0)
 	return -1;
     if (!_ifname)
@@ -121,6 +150,16 @@ ToDevice::configure(Vector<String> &conf, ErrorHandler *errh)
     else if (method == "NETMAP")
 	_method = method_netmap;
 #endif
+#if TODEVICE_ALLOW_DPDK
+    else if (method == "DPDK") {
+        _method = method_dpdk;
+        _yield_tsc = _yield_us * (rte_get_tsc_hz() + US_PER_S - 1) / US_PER_S;
+        if (_dpdk->port_id(_ifname, &_portid) != 0)
+            return errh->error("unable to find %s", _ifname.c_str());
+        click_chatter("%p{element}(%s): DPDK port_id: %d, burst: %d", this, _ifname.c_str(), _portid, _burst);
+    }
+#endif
+
     else
 	return errh->error("bad METHOD");
 
@@ -343,6 +382,11 @@ bool
 ToDevice::run_task(Task *)
 {
     Packet *p = _q;
+#if TODEVICE_ALLOW_DPDK
+    struct rte_mbuf *mbuf;
+    struct rte_mbuf *mbufs[_burst];
+    Packet *pp[_burst];
+#endif
     _q = 0;
     int count = 0, r = 0;
 
@@ -352,14 +396,67 @@ ToDevice::run_task(Task *)
 	    if (!(p = input(0).pull()))
 		break;
 	}
-	if ((r = send_packet(p)) >= 0) {
-	    _backoff = 0;
-	    checked_output_push(0, p);
-	    ++count;
-	    p = 0;
-	} else
-	    break;
+    if (_method == method_dpdk) {
+#if TODEVICE_ALLOW_DPDK
+        mbuf = (struct rte_mbuf*)p->destructor_argument();
+
+        // readjust rte_mbuf metadata according to Packet metadata
+        int diff = p->data() - rte_pktmbuf_mtod(mbuf, u_char*);
+        if (diff > 0) {
+            rte_pktmbuf_prepend(mbuf, diff);
+        } else if (diff < 0) {
+            rte_pktmbuf_adj(mbuf, -diff);
+        }
+
+        diff = p->length() - rte_pktmbuf_pkt_len(mbuf);
+
+        if (diff > 0) {
+            rte_pktmbuf_append(mbuf, diff);
+        } else if (diff < 0) {
+            rte_pktmbuf_trim(mbuf, -diff);
+        }
+
+        mbufs[count] = mbuf;
+        pp[count] = p;
+        count++;
+        p = 0;
+#endif
+    } else {
+        if ((r = send_packet(p)) >= 0) {
+            _backoff = 0;
+            checked_output_push(0, p);
+            ++count;
+            p = 0;
+        } else
+            break;
+    }
     } while (count < _burst);
+
+#if TODEVICE_ALLOW_DPDK
+    if (_method == method_dpdk) {
+        int i;
+        while (r < std::min(count, _burst)) {
+            i = rte_eth_tx_burst((uint8_t) _portid, _queueid, &mbufs[r], count - r);
+            if (i <= 0)
+                break;
+            r += i;
+        }
+
+        // FIXME: retry packets
+        for (i = 0; i < r; i++) {
+            pp[i]->reset_buffer(); // mbuf already freed by rte_eth_tx_burst()
+            checked_output_push(0, pp[i]);
+        }
+        for (i = r; i < count; i++)
+            checked_output_push(1, pp[i]);
+        // FIXME: if r < 0, the code at the end tries to push out p to port 1 again.
+
+        if (unlikely(_yield_tsc > 0 && rte_rdtsc() - _prev_tsc > _yield_tsc)) {
+            sched_yield();
+            _prev_tsc = rte_rdtsc(); // re-read after sched_in
+        }
+    }
+#endif
 
     if (r == -ENOBUFS || r == -EAGAIN) {
 	assert(!_q);
@@ -383,7 +480,7 @@ ToDevice::run_task(Task *)
 	checked_output_push(1, p);
     }
 
-    if (p || _signal)
+    //if (p || _signal)
 	_task.fast_reschedule();
     return count > 0;
 }
@@ -445,4 +542,7 @@ ToDevice::add_handlers()
 
 CLICK_ENDDECLS
 ELEMENT_REQUIRES(FromDevice userlevel)
+#if TODEVICE_ALLOW_DPDK
+ELEMENT_REQUIRES(DPDKInfo)
+#endif
 EXPORT_ELEMENT(ToDevice)

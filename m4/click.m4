@@ -462,6 +462,53 @@ AC_DEFUN([CLICK_CHECK_NETMAP], [
 
 
 dnl
+dnl CLICK_CHECK_DPDK
+dnl Finds header and library files for DPDK.
+dnl
+
+AC_DEFUN([CLICK_CHECK_DPDK], [
+    DPDK_LIBS=""
+    AC_ARG_WITH([dpdk],
+        [AS_HELP_STRING([--with-dpdk=/path/to/dpdk],
+                        [specify the DPDK build directory [no]])],
+        [], [with_dpdk=no])
+
+    if test X"$with_dpdk" != Xno; then
+        if test X"$with_dpdk" != Xyes; then
+            DPDK_PATH="$with_dpdk"
+        else
+            DPDK_PATH="$RTE_SDK/$RTE_TARGET"
+        fi
+        DPDK_INCLUDE="$DPDK_PATH/include"
+        DPDK_LIB_DIR="$DPDK_PATH/lib"
+        DPDK_LIBS="-Wl,--whole-archive,-ldpdk,--no-whole-archive -lpthread -lm -ldl"
+
+        save_LIBS="$LIBS"
+        CPPFLAGS="$CPPFLAGS -I$DPDK_INCLUDE"
+        LDFLAGS="$LDFLAGS -L$DPDK_LIB_DIR"
+        LIBS="$save_LIBS $DPDK_LIBS"
+
+        found=no
+        AC_LINK_IFELSE(
+           [AC_LANG_PROGRAM([#include <rte_config.h>
+                             #include <rte_eal.h>],
+                            [int rte_argc; char ** rte_argv;
+                             rte_eal_init(rte_argc, rte_argv);])],
+           [found=yes])
+
+        if test $found = no; then
+            AC_MSG_ERROR([cannot link with DPDK])
+        fi
+
+        LIBS="$save_LIBS"
+
+        AC_DEFINE([HAVE_DPDK], [1], [System has DPDK support.])
+    fi
+    AC_SUBST(DPDK_LIBS)
+])
+
+
+dnl
 dnl CLICK_PROG_INSTALL
 dnl Substitute both INSTALL and INSTALL_IF_CHANGED.
 dnl

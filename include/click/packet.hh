@@ -66,6 +66,10 @@ class Packet { public:
     static WritablePacket* make(unsigned char* data, uint32_t length,
 				buffer_destructor_type buffer_destructor,
                                 void* argument = (void*) 0) CLICK_WARN_UNUSED_RESULT;
+    static inline WritablePacket *make(unsigned char* pkt_head, uint32_t pkt_len,
+		    unsigned char *buf_head, uint32_t buf_len,
+		    buffer_destructor_type buffer_destructor,
+		    void* argument = (void*) 0) CLICK_WARN_UNUSED_RESULT;
 #endif
 
     static void static_cleanup();
@@ -101,6 +105,9 @@ class Packet { public:
 	assert(!shared());
 	_head = _data = _tail = _end = 0;
 	_destructor = 0;
+    }
+    void* destructor_argument() const {
+        return _destructor_argument;
     }
 #endif
 
@@ -1340,6 +1347,30 @@ Packet::make(const void *data, uint32_t length)
     return make(default_headroom, data, length, 0);
 }
 
+#ifdef CLICK_USERLEVEL
+inline WritablePacket *
+Packet::make(unsigned char *pkt_head, uint32_t pkt_len,
+             unsigned char *buf_head, uint32_t buf_len,
+             buffer_destructor_type destructor, void* argument)
+{
+# if HAVE_CLICK_PACKET_POOL
+    WritablePacket *p = WritablePacket::pool_allocate(false);
+# else
+    WritablePacket *p = new WritablePacket;
+# endif
+    if (p) {
+        p->initialize();
+        p->_head = buf_head;
+        p->_data = pkt_head;
+        p->_tail = pkt_head + pkt_len;
+        p->_end  = buf_head + buf_len;
+        p->_destructor = destructor;
+        p->_destructor_argument = argument;
+    }
+    return p;
+}
+#endif
+
 /** @brief Create and return a new packet.
  * @param length length of packet
  * @return new packet, or null if no packet could be created
@@ -1416,7 +1447,7 @@ Packet::kill()
 # endif
     skbmgr_recycle_skbs(b);
 #elif HAVE_CLICK_PACKET_POOL
-    if (_use_count.dec_and_test())
+    //if (_use_count.dec_and_test())
 	WritablePacket::recycle(static_cast<WritablePacket *>(this));
 #else
     if (_use_count.dec_and_test())

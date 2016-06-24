@@ -661,6 +661,7 @@ EXPAT_INCLUDES
 XML2CLICK
 PROPER_LIBS
 PROPER_INCLUDES
+DPDK_LIBS
 NETMAP_INCLUDES
 PCAP_LIBS
 PCAP_INCLUDES
@@ -845,6 +846,7 @@ enable_valgrind
 enable_schedule_debugging
 enable_intel_cpu
 with_netmap
+with_dpdk
 with_proper
 with_expat
 '
@@ -1545,6 +1547,8 @@ Optional Packages:
   --with-freebsd[=SRC,INC] FreeBSD source code is in SRC [/usr/src/sys],
                           include directory is INC [/usr/include]
   --with-netmap           enable netmap [no]
+  --with-dpdk=/path/to/dpdk
+                          specify the DPDK build directory [no]
   --with-proper[=PREFIX]  use PlanetLab Proper library (optional)
   --with-expat[=PREFIX]   locate expat XML library (optional)
 
@@ -10651,6 +10655,64 @@ $as_echo "#define HAVE_NET_NETMAP_H 1" >>confdefs.h
     fi
 
 
+
+    DPDK_LIBS=""
+
+# Check whether --with-dpdk was given.
+if test "${with_dpdk+set}" = set; then :
+  withval=$with_dpdk;
+else
+  with_dpdk=no
+fi
+
+
+    if test X"$with_dpdk" != Xno; then
+        if test X"$with_dpdk" != Xyes; then
+            DPDK_PATH="$with_dpdk"
+        else
+            DPDK_PATH="$RTE_SDK/$RTE_TARGET"
+        fi
+        DPDK_INCLUDE="$DPDK_PATH/include"
+        DPDK_LIB_DIR="$DPDK_PATH/lib"
+        DPDK_LIBS="-Wl,--whole-archive,-ldpdk,--no-whole-archive -lpthread -lm -ldl"
+
+        save_LIBS="$LIBS"
+        CPPFLAGS="$CPPFLAGS -I$DPDK_INCLUDE"
+        LDFLAGS="$LDFLAGS -L$DPDK_LIB_DIR"
+        LIBS="$save_LIBS $DPDK_LIBS"
+
+        found=no
+        cat confdefs.h - <<_ACEOF >conftest.$ac_ext
+/* end confdefs.h.  */
+#include <rte_config.h>
+                             #include <rte_eal.h>
+int
+main ()
+{
+int rte_argc; char ** rte_argv;
+                             rte_eal_init(rte_argc, rte_argv);
+  ;
+  return 0;
+}
+_ACEOF
+if ac_fn_c_try_link "$LINENO"; then :
+  found=yes
+fi
+rm -f core conftest.err conftest.$ac_objext \
+    conftest$ac_exeext conftest.$ac_ext
+
+        if test $found = no; then
+            as_fn_error $? "cannot link with DPDK" "$LINENO" 5
+        fi
+
+        LIBS="$save_LIBS"
+
+
+$as_echo "#define HAVE_DPDK 1" >>confdefs.h
+
+    fi
+
+
     if test "$HAVE_PCAP" != yes -a "$HAVE_NETMAP" != yes -a "$ac_cv_under_linux" != yes; then
         { $as_echo "$as_me:${as_lineno-$LINENO}: WARNING:
 =========================================
@@ -13340,6 +13402,10 @@ fi
 
 if test "x$HAVE_NETMAP" = xyes; then
     provisions="$provisions netmap"
+fi
+
+if test "x$HAVE_DPDK" = xyes; then
+    provisions="$provisions dpdk"
 fi
 
 if test "x$HAVE_PCAP" = xyes; then

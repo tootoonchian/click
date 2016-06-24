@@ -17,13 +17,17 @@ int pcap_setnonblock(pcap_t *p, int nonblock, char *errbuf);
 # endif
 }
 #endif
-
 #if HAVE_NET_NETMAP_H
 # define FROMDEVICE_ALLOW_NETMAP 1
 # include "elements/userlevel/netmapinfo.hh"
 #endif
 
-#if FROMDEVICE_ALLOW_NETMAP || FROMDEVICE_ALLOW_PCAP
+#if HAVE_DPDK
+# define FROMDEVICE_ALLOW_DPDK 1
+# include "elements/userlevel/dpdkinfo.hh"
+#endif
+
+#if FROMDEVICE_ALLOW_DPDK || FROMDEVICE_ALLOW_NETMAP || FROMDEVICE_ALLOW_PCAP
 # include <click/task.hh>
 extern "C" {
 void FromDevice_get_packet(u_char*, const struct pcap_pkthdr*, const u_char*);
@@ -206,7 +210,7 @@ class FromDevice : public Element { public:
     const NetmapInfo *netmap() const { return _method == method_netmap ? &_netmap : 0; }
 #endif
 
-#if FROMDEVICE_ALLOW_NETMAP || FROMDEVICE_ALLOW_PCAP
+#if FROMDEVICE_ALLOW_DPDK || FROMDEVICE_ALLOW_NETMAP || FROMDEVICE_ALLOW_PCAP
     bool run_task(Task *task);
 #endif
 
@@ -217,13 +221,13 @@ class FromDevice : public Element { public:
 #if FROMDEVICE_ALLOW_LINUX || FROMDEVICE_ALLOW_PCAP || FROMDEVICE_ALLOW_NETMAP
     int _fd;
 #endif
-#if FROMDEVICE_ALLOW_NETMAP || FROMDEVICE_ALLOW_PCAP
+#if FROMDEVICE_ALLOW_DPDK || FROMDEVICE_ALLOW_NETMAP || FROMDEVICE_ALLOW_PCAP
     Task _task;
 #endif
 #if FROMDEVICE_ALLOW_LINUX
     unsigned char *_linux_packetbuf;
 #endif
-#if FROMDEVICE_ALLOW_PCAP || FROMDEVICE_ALLOW_NETMAP
+#if FROMDEVICE_ALLOW_PCAP || FROMDEVICE_ALLOW_NETMAP || FROMDEVICE_ALLOW_DPDK
     void emit_packet(WritablePacket *p, int extra_len, const Timestamp &ts);
 #endif
 #if FROMDEVICE_ALLOW_PCAP
@@ -237,6 +241,12 @@ class FromDevice : public Element { public:
 #if FROMDEVICE_ALLOW_PCAP || FROMDEVICE_ALLOW_NETMAP
     friend void FromDevice_get_packet(u_char*, const struct pcap_pkthdr*,
                                       const u_char*);
+#endif
+#if FROMDEVICE_ALLOW_DPDK
+    DPDKInfo* _dpdk;
+    uint8_t _portid;
+    uint16_t _queueid;
+    double _prev_ts;
 #endif
 
     bool _force_ip;
@@ -262,7 +272,7 @@ class FromDevice : public Element { public:
     int _snaplen;
     uint16_t _protocol;
     unsigned _headroom;
-    enum { method_default, method_netmap, method_pcap, method_linux };
+    enum { method_default, method_netmap, method_dpdk, method_pcap, method_linux };
     int _method;
 #if FROMDEVICE_ALLOW_PCAP
     String _bpf_filter;
